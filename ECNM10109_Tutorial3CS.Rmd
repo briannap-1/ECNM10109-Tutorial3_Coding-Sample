@@ -1,0 +1,161 @@
+---
+title: "Tutorial 3 Markdown"
+author: "Brianna Penkala"
+date: "2024-10-11"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = FALSE}
+library(boot)
+library(glmnet)
+library(tidyverse)
+source("/Users/briannapenkala/Downloads/R/Datasets/naref.R")
+set.seed(1)
+mydat <- read.csv("/Users/briannapenkala/Downloads/R/Datasets/bikerentals2011.csv", colClasses=c(rep('factor', 6), rep('numeric', 4)))
+mydat <- naref(mydat)
+# Standardize continuous regressors 
+mydat[,c("temp","hum","windspeed")] <- scale(mydat[,c("temp","hum","windspeed")])
+```
+
+```{r}
+ggplot(data = mydat, aes(log(cnt), y = after_stat(density))) + geom_histogram(color = "white", fill = "lightblue", bins = 20) + labs(title = "Bike Rentals", x = "Hourly Bike Rentals (log)", y = ("Density")) + geom_density(color = "darkgrey", linewidth = 1)
+```
+
+The histogram is skewed left, showing there are significantly more bike rentals between log(4) and log(6). Therefore, there are more days with log(4) to log(6) bikes rented, compared to smaller amounts. 
+
+## Lasso Regularization
+```{r}
+# Creating a formula to be used
+formula <- as.formula("log(cnt) ~ . + hr*weekday*season*(temp + hum + windspeed)")
+# Setting up matrix, turning cnt into log(cnt), assigning x and y
+x <- model.matrix(formula, data = mydat)[,-1] 
+y <- log(mydat$cnt)
+# Running cv.lasso
+cv.lasso <- cv.glmnet(x, y, alpha = 1, nfolds = 5, standardize = F)
+plot(cv.lasso)
+```
+
+This plot shows the MSE at different values of lambda for the lasso regression. It is clear the minimum MSE is around the lambda value -8, meaning this is the lambda value that results in the least amount of bias. At this lambda value, there are around 555 non-zero coefficients which allows the regularization to reduce variance and produce more meaningful coefficient values.
+
+The penalty weight with the lowest MSE is index 81 and a value of .0003458. The MSE value at this weight is .1549.
+
+```{r}
+# Showing the path of the lasso
+path.lasso <- glmnet(x, y, alpha = 1, standardize = F)
+plot(path.lasso, xvar = "lambda", label = T)
+
+# Calculating R-squared
+r.squared.prediction <- predict(cv.lasso, newx = x, s = "lambda.min")
+RSS <- sum((y - r.squared.prediction)^2)
+TSS <- sum((y - mean(y))^2)
+r.squared <- 1- (RSS / TSS)
+r.squared
+# Showing MSE at lowest lambda
+cv.lasso
+```
+
+The lasso regularization path provides a visualization of the coefficients gradually being reduced to 0, which allows us to understand what coefficients are larger and less effected by the lasso regularization. Through the visualization, we see the majority of the coefficients are reduced to 0 by log(4). The lambda value with the lowest MSE is .0003458, with a MSE of .1549. The R-squared is .938.
+  
+## Ridge Regularization
+```{r}
+cv.ridge <- cv.glmnet(x, y, alpha = 0, lambda.min.ratio = 6e-07, nfolds = 5, standardize = F)
+plot(cv.ridge)
+```
+
+This plot shows the MSE values for different values of lambda in the ridge estimator. The minimum MSE is at the lowest value of lambda, less than log(-2). Higher values of lambda result in higher MSE values. The number of non-zero coefficients is not expected to change throughout the graph since the ridge regularization does not reduce coefficients all the way to zero.
+
+```{r}
+# Showing ridge path
+path.ridge <- glmnet(x, y, alpha = 0, standardize = F)
+plot(path.ridge, xvar = "lambda", label = T)
+
+# Calculating R-squared
+r.squared.prediction <- predict(cv.ridge, newx = x, s = "lambda.min")
+RSS <- sum((y - r.squared.prediction)^2)
+TSS <- sum((y - mean(y))^2)
+r.squared <- 1- (RSS / TSS)
+r.squared
+# Showing MSE at lowest lambda
+cv.ridge
+```
+
+The ridge regularization path shows that most coefficients approach zero around log(4). The coefficients are more uniformly regularized in the ridge regularization compared to the lasso regularization. Additionally, the regularized coefficients in the lasso path are mostly reduced by log(-4), while the ridge regularization path is mostly reduced by log(4). The lambda value with the lowest MSE is .05904 with an MSE of .4985. The R-squared is .4985.
+
+## Using new data
+```{r}
+# Setup
+new.data <- read.csv("/Users/briannapenkala/Downloads/R/Datasets/bikerentals2012.csv", colClasses = c(rep('factor', 6), rep('numeric', 4)))
+new.data <- naref(new.data)
+# Standardize continuous regressors 
+new.data[,c("temp", "hum", "windspeed")] <- scale(new.data[,c("temp", "hum", "windspeed")])
+# Only selecting the specified week
+new.data <- new.data[2847:3014,]
+# New matrix of x for prediction
+new.x <- model.matrix(formula, data = new.data)[,-1] 
+```
+
+## Creating predictions
+```{r, results = 'hide'}
+# Creating lasso prediction
+lasso.pred <- predict(cv.lasso, s = cv.lasso$lambda.min, newx = new.x)
+# Creating ridge prediction
+ridge.pred <- predict(cv.ridge, s = cv.ridge$lambda.min, newx = new.x)
+# Creating an hr column, adding to matrices
+as.matrix(lasso.pred)
+as.matrix(ridge.pred)
+real.hr <- 1:nrow(lasso.pred)
+lasso.pred <- cbind(lasso.pred, real.hr)
+ridge.pred <- cbind(ridge.pred, real.hr)
+# Also adding to new data so it can be graphed correctly
+new.data <- cbind(new.data, real.hr)
+
+# Creating matrix
+predicted.matrix <- matrix(,2,2)
+colnames(predicted.matrix) <- c("Lasso", "Ridge")
+rownames(predicted.matrix) <-c("Mean", "SD")
+predicted.matrix[1,1] <- mean(lasso.pred)
+predicted.matrix[1,2] <- mean(ridge.pred)
+predicted.matrix[2,1] <- sd(lasso.pred)
+predicted.matrix[2,2] <- sd(ridge.pred)
+predicted.table <- as.table(predicted.matrix)
+predicted.table
+```
+
+```{r}
+# Plot to show actual data
+plot <- ggplot(new.data, aes(real.hr, log(cnt))) +
+  geom_line(aes(color = "Actual data")) +
+geom_line(data = lasso.pred, aes(real.hr, s1, color = "Lasso prediction")) +
+geom_line(data = ridge.pred, aes(real.hr, s1, color = "Ridge prediction")) +
+labs(x = "Hour", y = "Bikes Rented (log)", title = "Bikes Rented Per Hour", color = "Legend")
+
+# Display plot
+plot
+```
+
+## Table of Weekday Coefficients
+```{r}
+# Creating a matrix with coefficients from the lasso
+lasso.coefficients <- as.matrix(coef(cv.lasso, s = cv.lasso$lambda.min))
+# Creating a variable for each weekday coefficient
+weekday0.coef <- lasso.coefficients["weekday0",]
+weekday1.coef <- lasso.coefficients["weekday1",]
+weekday2.coef <- lasso.coefficients["weekday2",]
+weekday3.coef <- lasso.coefficients["weekday3",]
+weekday4.coef <- lasso.coefficients["weekday4",]
+weekday5.coef <- lasso.coefficients["weekday5",]
+weekday6.coef <- lasso.coefficients["weekday6",]
+
+# Creating a table with weekday coefficients
+weekday.table <- as.table(rbind(c(weekday0.coef, weekday1.coef, weekday2.coef, weekday3.coef, weekday4.coef, weekday5.coef, weekday6.coef)))
+dimnames(weekday.table) <- list("Coefficient", Weekday = c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"))
+weekday.table
+```
+
+The higher coefficients on Friday and Saturday make sense since people are more likely to be using the bikes for recreation, though it does not make sense why Sunday is 0. Additionally, these coefficients suggest that people may be more likely to use the bikes for recreation instead of commuting. 
